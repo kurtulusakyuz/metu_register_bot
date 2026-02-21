@@ -1,0 +1,6 @@
+config.py
+script.log
+__pycache__/
+.vscode/
+reg_venv/
+twocaptcha/__pycache__/
