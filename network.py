@@ -19,7 +19,7 @@ class Registration:
         self.user_agent = self.randomUserAgent()
         self.session = requests.Session(impersonate=self.impersonate, default_headers=False)
         self.hidden_inputs = {}
-        self.sitekey = config.DEFAULT_SITEKEY
+        self.sitekey = config.DEFAULT_SITEKEY_RECAPTCHA
         self.logged_in = False
         self.captcha_type = 'recaptcha'
         self.isRecaptcha = True
@@ -237,29 +237,41 @@ class Registration:
         soup = BeautifulSoup(content, 'html.parser')
         div_captcha = soup.find('div', class_ ='g-recaptcha')
         self.captcha_type = 'recaptcha'
+        default_sitekey= config.DEFAULT_SITEKEY_RECAPTCHA
         if not div_captcha: 
             logger.info("Couldn't find recaptcha. Finding hcaptcha if possible...")
             div_captcha = soup.find('div', class_='h-captcha')
             self.captcha_type = 'hcaptcha'
+            default_sitekey = config.DEFAULT_SITEKEY_HCAPTCHA
         if div_captcha:
             self.sitekey = div_captcha.get('data-sitekey')
-        if not self.sitekey : self.sitekey = config.DEFAULT_SITEKEY
+        if not self.sitekey : 
+            self.sitekey = default_sitekey
         return self.sitekey, self.captcha_type
 
-    def solveCaptcha(self):
-        if not self.sitekey: return False
+    def solveCaptcha(self, total_attempts: int = 3):
+        if not self.sitekey: 
+            logger.error('No sitekey available.')
+            return False
         solver = TwoCaptcha(config.TWOCAPTCHA_API_KEY)
-        try:
-            if self.captcha_type == 'recaptcha':
-                result = solver.recaptcha(sitekey=self.sitekey, url=self.base_url + '/main.php')
-                if result: return result['code']
-            elif self.captcha_type == 'hcaptcha':
-                result = solver.hcaptcha(sitekey=self.sitekey, url=self.base_url + '/main.php')
-                if result: return result['code']
-            return False
-        except Exception as e:
-            logger.info(f"2Captcha error. Please check your balance or api key.")
-            return False
+        for attempt in range(1,total_attempts+1):     
+            try:
+                logger.info(f'Solving {self.captcha_type} ({attempt}/{total_attempts})...')
+                if self.captcha_type == 'recaptcha':
+                    result = solver.recaptcha(sitekey=self.sitekey, url=self.base_url + '/main.php')
+                elif self.captcha_type == 'hcaptcha':
+                    result = solver.hcaptcha(sitekey=self.sitekey, url=self.base_url + '/main.php')
+                else:
+                    return None
+                if result and result.get('code'):
+                    logger.info('Captcha solved successfully.')
+                    return result['code']
+            except Exception:
+                logger.warning(f'Attempt {attempt} failed.')
+            if attempt < total_attempts:
+                time.sleep(1.5)
+        logger.error('2Captcha error. Please check your balance or api key.')
+        return None
 
     @classmethod
     def detectProxy(cls): #Maybe later 
