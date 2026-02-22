@@ -10,6 +10,8 @@ from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from twocaptcha.solver import TwoCaptcha
 from urllib.parse import urljoin
+import threading
+import queue
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,8 @@ class Registration:
         self.captcha_type = 'recaptcha'
         self.isRecaptcha = True
         self.captcha_token = None
+        self.token_queue = queue.Queue(maxsize=2)
+        self.stop_threads = False
     
     def _makeRequest(self, method: str, path='', payload: dict = None, timeout: int = 5):
         url = self.base_url + path
@@ -35,19 +39,18 @@ class Registration:
                 self.request_time = datetime.now(timezone.utc)
                 self.start_local = time.monotonic() ###for RTT
             if method.upper() == 'GET':
-                self.response = self.session.get(url, headers=headers, timeout=timeout)
-                self.response.raise_for_status()
+                response = self.session.get(url, headers=headers, timeout=timeout)
             elif method.upper() == 'POST':
-                self.response = self.session.post(url, headers=headers, data=payload, timeout=timeout)
-                self.response.raise_for_status()
+                response = self.session.post(url, headers=headers, data=payload, timeout=timeout)
+            else: return False
+            response.raise_for_status()
             if isMainPage:
                 self.end_local = time.monotonic() ###for RTT
-                self.response_headers = self.response.headers
-            if self.response:
-                self.parseHiddenInputs(self.response.text)
-                if not isMainPage:
-                    self.parseCaptchaSiteKey(self.response.text)
-            return self.response
+                self.response_headers = response.headers
+            self.parseHiddenInputs(response.text)
+            if not isMainPage:
+                self.parseCaptchaSiteKey(response.text)
+            return response
         except requests.exceptions.Timeout as e:
             logger.error(f'Timeout error ({path}): {e}')
         except requests.exceptions.HTTPError as e:
@@ -59,11 +62,8 @@ class Registration:
     def checkSystem(self): # Şu anlık böyle olsun. Sistem açıldığında kontrol edeceğim.
         response = self._makeRequest('GET', timeout=10)
         if not response: return False
-        if response.status_code == 200:
-            logger.info('System is online.')
-            return True
-        logger.warning(f'System returned unexpected status: {response.status_code}')
-        return False
+        logger.info('System is online.')
+        return True
 
     def _getAssets(self, content: str):
         soup = BeautifulSoup(content, 'html.parser')
@@ -102,16 +102,25 @@ class Registration:
                 logger.info('Logged in.')
         return self.logged_in
 
-    def registerCourse(self,course_code: int,section: int, course_category: int=8, isPrefetch: bool= False):
+    def registerCourse(self,course_code: int,section: int, course_category: int=8):
         if not self.logged_in:
             logger.error('There might be an error while logging in. Please restart the script.')
             return 'error'
-        if not isPrefetch:
-            self.isRecaptcha = self.captcha_type=='recaptcha'
-            self.captcha_token = self.solveCaptcha()
-            if not self.captcha_token:
-                logger.warning('Captcha failed. Retrying in a few seconds.')
-                return 'retry'
+        self.isRecaptcha = self.captcha_type=='recaptcha'
+        while True:
+            try:
+                captcha_data = self.token_queue.get(timeout=60)
+            except queue.Empty:
+                logger.error('^Captcha pool is empty. There might be a problem.')
+                self.stop_threads = True
+                return 'error'
+            token_age = time.monotonic() - captcha_data['timestamp']
+            if token_age > 110:
+                logger.warning(f'Captcha token expired ({token_age:.1f}s old). Getting new one...')
+                continue
+            self.captcha_token = captcha_data['token']
+            logger.info(f'Using captcha token ({token_age:.1f}s old).')
+            break
         payload = {
             'textChangeCourseSection': '',
             'selectChangeCourseCategory': '1',
@@ -131,22 +140,32 @@ class Registration:
         else: return 'error'
 
     def registerContinously(self,course_code: int, section: int, total_attempts: int=100, avg_jitter: int=10):
+        if not hasattr(self,'worker') or not self.worker.is_alive():
+            self.stop_threads = False
+            self.worker = threading.Thread(target=self.captchaWorker, daemon=True)
+            self.worker.start()
         attempt = 0
         while attempt<total_attempts:
             attempt += 1
             logger.info(f'Attempt : {attempt}/{total_attempts}')
             status = self.registerCourse(course_code, section)
-            if status == 'success': return True
-            if status == 'error': return False
+            if status == 'success':
+                self.stop_threads = True
+                return True
+            if status == 'error': 
+                self.stop_threads = True
+                return False
             if status in ('retry', 'unknown'): logger.warning('Registration attempt failed. Retrying...')
             wait = self.jitter(avg_jitter*0.5, avg_jitter*1.5)
             logger.info(f'Retrying in {wait:.2f} seconds...')
             time.sleep(wait)
         logger.error('Max attempts reached. Registration failed.')
+        self.stop_threads = True
         return False
     
     def registerWaiting(self, course_code: int, section: int, opening_time_utc: datetime, user_code: str, password: str, captcha_prefetch: float = config.CAPTCHA_PREFETCH):
         logger.info('Bu okulun ben aqq.')
+        self.prepare(get_assets=False)
         self.syncClientTime()
         time_difference = getattr(self, "time_difference", timedelta(0))
         opening_time = opening_time_utc - time_difference
@@ -156,26 +175,27 @@ class Registration:
             remaining_time = captcha_time - datetime.now(timezone.utc)
             print(f'\rRemaining time: {remaining_time.total_seconds():.2f} s', end="")
             time.sleep(0.5)
-        logger.info('\nSolving captcha to prepare for course registration.')
-        self.captcha_token = self.solveCaptcha()
-        if not self.captcha_token:
-            logger.error('Error while solving captcha.')
-            return False
-        logger.info('Captcha is ready. The registration page will be loading in a few seconds.')
+        logger.info('\n Starting solving captcha to prepare for course registration.')
+        self.stop_threads = False
+        self.worker = threading.Thread(target=self.captchaWorker, daemon=True)
+        self.worker.start()
         while datetime.now(timezone.utc) < opening_time:
             time.sleep(0.05)
         logger.info('Logging in the system and parsing inputs...')
         self.prepare(get_assets=False)
         if not self.loginToSystem(user_code=user_code,password=password):
             logger.error('Error when logging in.')
+            self.stop_threads = True
             return False
         self.isRecaptcha = self.captcha_type=='recaptcha'
-        status = self.registerCourse(course_code, section, isPrefetch=True)
+        status = self.registerCourse(course_code, section)
         if status == 'success':
             logger.info("Registered on first attempt.")
+            self.stop_threads = True
             return True
         if status == 'error':
             logger.error("Fatal error on first attempt.")
+            self.stop_threads = True
             return False
         return self.registerContinously(course_code, section, total_attempts=10, avg_jitter=3)
 
@@ -255,6 +275,22 @@ class Registration:
                 time.sleep(1.5)
         logger.error('2Captcha error. Please check your balance or api key.')
         return None
+    
+    def captchaWorker(self):
+        logger.info('Captcha worker started.')
+        try:
+            while not self.stop_threads:
+                if not self.token_queue.full():
+                    result = self.solveCaptcha()
+                    if result:
+                        self.token_queue.put({"token": result, "timestamp" : time.monotonic()})
+                        logger.info('New captcha added to the captcha pool.')
+                    else:
+                        time.sleep(3)
+                else:
+                    time.sleep(1)
+        except Exception as e:
+            logger.error(f'Captcha worker crashed: {e}')
 
     @classmethod
     def detectProxy(cls): #Maybe later 

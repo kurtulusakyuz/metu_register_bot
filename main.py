@@ -1,9 +1,3 @@
-# ==============================================================================
-# METU Course Registration Bot
-# Author: kurtulus
-# Description: Advanced course registration bot with WAF bypass & RTT sync.
-# ==============================================================================
-
 from network import Registration
 import sys
 from datetime import datetime, timezone, timedelta
@@ -32,7 +26,6 @@ def printSplash():
     print(splash)
 
 def main():
-
     printSplash()
     logger.info('Starting METU Registration Bot. Coded by kurtulus.')
     print('Preparing...')
