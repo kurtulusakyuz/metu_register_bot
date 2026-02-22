@@ -1,9 +1,3 @@
-# ==============================================================================
-# METU Course Registration Bot
-# Author: kurtulus
-# Description: Advanced course registration bot with WAF bypass & RTT sync.
-# ==============================================================================
-
 from curl_cffi import requests
 import time
 import os
@@ -30,44 +24,49 @@ class Registration:
         self.captcha_type = 'recaptcha'
         self.isRecaptcha = True
         self.captcha_token = None
+    
+    def _makeRequest(self, method: str, path='', payload: dict = None, timeout: int = 5):
+        url = self.base_url + path
+        isMainPage = path == ''
+        headers = self.setHeaders(isMainPage=isMainPage)
+        try:
+            if isMainPage:
+                self.request_time = datetime.now(timezone.utc)
+                self.start_local = time.monotonic() ###for RTT
+            if method.upper() == 'GET':
+                self.response = self.session.get(url, headers=headers, timeout=timeout)
+                self.response.raise_for_status()
+            elif method.upper() == 'POST':
+                self.response = self.session.post(url, headers=headers, data=payload, timeout=timeout)
+                self.response.raise_for_status()
+            if isMainPage:
+                self.end_local = time.monotonic() ###for RTT
+                self.response_headers = self.response.headers
+            if self.response:
+                self.parseHiddenInputs(self.response.text)
+                if not isMainPage:
+                    self.parseCaptchaSiteKey(self.response.text)
+            return self.response
+        except requests.exceptions.Timeout as e:
+            logger.error(f'Timeout error ({path}): {e}')
+        except requests.exceptions.HTTPError as e:
+            logger.error(f'HTTP error ({path}): {e}')
+        except requests.exceptions.RequestException as e:
+            logger.error(f'Request error ({path}) {e}')
+        return False
 
     def checkSystem(self): # Şu anlık böyle olsun. Sistem açıldığında kontrol edeceğim.
-        try:
-            self.request_time = datetime.now(timezone.utc)
-            self.start_local = time.monotonic() ###for RTT
-            response = self.session.get(self.base_url, headers=self.setHeaders(isMainPage=True), timeout=10)
-            self.end_local = time.monotonic() ###for RTT
-            self.response_headers = response.headers
-            if response.status_code == 200: return True
-            else: return False
-        except requests.exceptions.RequestException:
-            return False
+        response = self._makeRequest('GET', timeout=10)
+        if not response: return False
+        if response.status_code == 200:
+            logger.info('System is online.')
+            return True
+        logger.warning(f'System returned unexpected status: {response.status_code}')
+        return False
 
-    def getPage(self, path : str = ''):
-        headers = self.setHeaders(isMainPage=(path == ''))
-        url = self.base_url + path
-        try:
-            self.request_time = datetime.now(timezone.utc)
-            self.start_local = time.monotonic() ###for RTT
-            self.response = self.session.get(url, headers=headers, timeout=5)
-            self.end_local = time.monotonic() ###for RTT
-            self.response_headers = self.response.headers
-            self.parseHiddenInputs(self.response.text)
-            return self.response.text
-        except requests.exceptions.RequestException as e:
-            logger.error(f"{e}. Couldn't reach the website. Please check your internet settings. Disable any vpn or proxy service if you're using.")
-            return False
-        
     def getAssets(self, content: str):
         soup = BeautifulSoup(content, 'html.parser')
-        assets = [
-            tag.get(attr)
-            for tag, attr in (
-                *[(link, "href") for link in soup.find_all("link", rel="stylesheet")],
-                *[(script, "src") for script in soup.find_all("script", src=True)]
-            )
-            if tag.get(attr)
-        ]
+        assets = [tag.get(attr) for tag, attr in (*[(link, "href") for link in soup.find_all("link", rel="stylesheet")], *[(script, "src") for script in soup.find_all("script", src=True)]) if tag.get(attr)]
         for asset in assets:
             asset_url = urljoin(self.base_url, asset)
             try:
@@ -78,11 +77,11 @@ class Registration:
 
     def prepare(self, path: str = '', get_assets: bool= True):
         logger.info('Loading the page and its assets...')
-        response = self.getPage(path = path)
+        response = self._makeRequest(method='GET',path = path)
         if not response:
             return False
         if get_assets: 
-            self.getAssets(response)
+            self.getAssets(response.text)
         return True
 
     def loginToSystem(self, user_code : str, password : str, prog_type : int = config.PROG_TYPE):
@@ -94,31 +93,24 @@ class Registration:
             **self.hidden_inputs
         }
         self.logged_in = False #Sistem her refresh de yeniden login istiyor. 
-        try:
-            url = self.base_url + '/main.php'
-            self.response = self.session.post(url, headers=self.setHeaders(isMainPage=False), data=payload)
-            self.parseHiddenInputs(self.response.text)
-            self.parseCaptchaSiteKey(self.response.text)
+        response = self._makeRequest('POST', path='/main.php', payload=payload)
+        if response:
             soup = BeautifulSoup(self.response.text, 'html.parser')
-            div_logout = soup.find('div', class_='logout')
-            if div_logout:
+            if soup.find('div', class_='logout'):
                 self.logged_in = True
                 logger.info('Logged in.')
-            return self.logged_in
-        except requests.exceptions.RequestException as e:
-            logger.error(f'{e}. Error while logging in. Please check your information.')
-            return False
+        return self.logged_in
 
     def registerCourse(self,course_code: int,section: int, course_category: int=8, isPrefetch: bool= False):
         if not self.logged_in:
             logger.error('There might be an error while logging in. Please restart the script.')
-            return False
+            return 'error'
         if not isPrefetch:
             self.isRecaptcha = self.captcha_type=='recaptcha'
             self.captcha_token = self.solveCaptcha()
             if not self.captcha_token:
                 logger.warning('Captcha failed. Retrying in a few seconds.')
-                return False
+                return 'retry'
         payload = {
             'textChangeCourseSection': '',
             'selectChangeCourseCategory': '1',
@@ -131,17 +123,11 @@ class Registration:
             **self.hidden_inputs
         }
         payload = {k: v for k, v in payload.items() if v is not None}
-        url = self.base_url + '/main.php'
-        try:
-            self.response = self.session.post(url,headers=self.setHeaders(isMainPage=False), data=payload)
-            self.response.raise_for_status()
-            self.status = self.checkResponse(self.response.text)
-            self.parseHiddenInputs(self.response.text)
-            self.parseCaptchaSiteKey(self.response.text)
-        except requests.exceptions.RequestException as e:
-            logger.error(f'{e}. Error while registering for the course.')
-            return False
-        return self.status
+        response = self._makeRequest('POST', path='/main.php', payload=payload)
+        if response:
+            status = self.checkResponse(response.text)
+            return status
+        else: return 'error'
 
     def registerContinously(self,course_code: int, section: int, total_attempts: int=100, avg_jitter: int=10):
         attempt = 0
@@ -151,14 +137,14 @@ class Registration:
             status = self.registerCourse(course_code, section)
             if status == 'success': return True
             if status == 'error': return False
-            if not status: logger.warning('Registration attempt failed. Retrying...')
+            if status in ('retry', 'unknown'): logger.warning('Registration attempt failed. Retrying...')
             wait = self.jitter(avg_jitter*0.5, avg_jitter*1.5)
             logger.info(f'Retrying in {wait:.2f} seconds...')
             time.sleep(wait)
         logger.error('Max attempts reached. Registration failed.')
         return False
     
-    def registerWaiting(self, course_code: int, section: int, opening_time_utc: datetime, user_code: str, password: str, captcha_prefetch: float = 45.0):
+    def registerWaiting(self, course_code: int, section: int, opening_time_utc: datetime, user_code: str, password: str, captcha_prefetch: float = config.CAPTCHA_PREFETCH):
         logger.info('Bu okulun ben aqq.')
         self.syncClientTime()
         time_difference = getattr(self, "time_difference", timedelta(0))
@@ -223,8 +209,7 @@ class Registration:
         return bool(self.hidden_inputs)
     
     def setHeaders(self, isMainPage = True):
-        parsed = urlparse(self.base_url)
-        host = parsed.netloc
+        host = urlparse(self.base_url).netloc
         default_headers = {
             "Host": host,
             "Connection": "keep-alive",
