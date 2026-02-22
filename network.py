@@ -9,15 +9,16 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from twocaptcha.solver import TwoCaptcha
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
 class Registration:
     def __init__(self, base_url: str):
         self.base_url = base_url
-        self.user_agent = self.randomUserAgent()
-        self.session = requests.Session(impersonate=self.impersonate, default_headers=False)
+        #self.user_agent = self.randomUserAgent() Şu anlık devre dışı.
+        self.impersonate = random.choice(config.IMPERSONATES)
+        self.session = requests.Session(impersonate=self.impersonate)
         self.hidden_inputs = {}
         self.sitekey = config.DEFAULT_SITEKEY_RECAPTCHA
         self.logged_in = False
@@ -64,14 +65,14 @@ class Registration:
         logger.warning(f'System returned unexpected status: {response.status_code}')
         return False
 
-    def getAssets(self, content: str):
+    def _getAssets(self, content: str):
         soup = BeautifulSoup(content, 'html.parser')
         assets = [tag.get(attr) for tag, attr in (*[(link, "href") for link in soup.find_all("link", rel="stylesheet")], *[(script, "src") for script in soup.find_all("script", src=True)]) if tag.get(attr)]
         for asset in assets:
             asset_url = urljoin(self.base_url, asset)
             try:
                 time.sleep(self.jitter(0.1, 0.4))
-                self.session.get(asset_url,headers=self.setHeaders(),timeout=3)
+                self.session.get(asset_url,headers={ "Referer" : self.base_url + '/main.php'},timeout=3)
             except Exception as e:
                 logger.error('Error when loading the page.')
 
@@ -81,7 +82,7 @@ class Registration:
         if not response:
             return False
         if get_assets: 
-            self.getAssets(response.text)
+            self._getAssets(response.text)
         return True
 
     def loginToSystem(self, user_code : str, password : str, prog_type : int = config.PROG_TYPE):
@@ -95,7 +96,7 @@ class Registration:
         self.logged_in = False #Sistem her refresh de yeniden login istiyor. 
         response = self._makeRequest('POST', path='/main.php', payload=payload)
         if response:
-            soup = BeautifulSoup(self.response.text, 'html.parser')
+            soup = BeautifulSoup(response.text, 'html.parser')
             if soup.find('div', class_='logout'):
                 self.logged_in = True
                 logger.info('Logged in.')
@@ -185,7 +186,7 @@ class Registration:
         if not div: 
             logger.warning('Error during registration. Retrying...')
             return 'unknown'
-        div_formsg = div.text.strip()
+        div_formsg = div.text.strip().lower()
         if not div_formsg:
             logger.info('^^^Successfully registered to the course.^^^')
             return 'success'
@@ -209,27 +210,11 @@ class Registration:
         return bool(self.hidden_inputs)
     
     def setHeaders(self, isMainPage = True):
-        host = urlparse(self.base_url).netloc
         default_headers = {
-            "Host": host,
-            "Connection": "keep-alive",
             "Cache-Control": None if isMainPage else "max-age=0",
-            "sec-ch-ua": f'"Not(A:Brand";v="99", "Google Chrome";v="{self.version}", "Chromium";v="{self.version}"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": "Windows",
             "Origin": None if isMainPage else self.base_url,
-            "Content-Type": None if isMainPage else "application/x-www-form-urlencoded",
-            "Upgrade-Insecure-Requests": "1",
-            "User-Agent": self.user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "dnt": "1",
             "Sec-Fetch-Site": "none" if isMainPage else "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-User": "?1",
-            "Sec-Fetch-Dest": "document",
             "Referer": "https://www.google.com/"if isMainPage else self.base_url+'/main.php',
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept-Language": "tr-TR,tr;q=0.9,en-GB;q=0.8,en-US;q=0.7,en;q=0.6"
         }
         return {k: v for k, v in default_headers.items() if v is not None} ###Normalde request None value headerları göndermez ama her ihtimale karşı.
 
@@ -244,9 +229,7 @@ class Registration:
             self.captcha_type = 'hcaptcha'
             default_sitekey = config.DEFAULT_SITEKEY_HCAPTCHA
         if div_captcha:
-            self.sitekey = div_captcha.get('data-sitekey')
-        if not self.sitekey : 
-            self.sitekey = default_sitekey
+            self.sitekey = div_captcha.get('data-sitekey') or default_sitekey
         return self.sitekey, self.captcha_type
 
     def solveCaptcha(self, total_attempts: int = 3):
@@ -287,7 +270,7 @@ class Registration:
         self.time_difference = server_time - local_time
         logger.info(f'The client time is synced. Time difference is {self.time_difference.total_seconds():.2f}s.')
             
-    def randomUserAgent(self):
+    def randomUserAgent(self): ###Artık lazım olmayabilir. Kalsın yine de, bir problem çıkarsa kullanırım.
         random_im = random.choice(config.IMPERSONATES)
         self.impersonate = random_im
         match = re.match(r"(chrome|firefox)(\d+)", random_im)
