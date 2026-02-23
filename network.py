@@ -100,7 +100,7 @@ class Registration:
                 logger.info('Logged in.')
         return self.logged_in
 
-    def registerCourse(self,course_code: int,section: int, course_category: int=8):
+    def registerCourse(self,course_code: int,section: int, course_category: int):
         if not self.logged_in:
             logger.error('There might be an error while logging in. Please restart the script.')
             return 'error'
@@ -144,13 +144,13 @@ class Registration:
             return status
         else: return 'error'
 
-    def registerContinously(self,course_code: int, section: int, total_attempts: int=100, avg_jitter: int=10):
+    def registerContinously(self,course_code: int, section: int, course_category: int, total_attempts: int=100, avg_jitter: int=10):
         self.startWorker()
         attempt = 0
         while attempt<total_attempts:
             attempt += 1
             logger.info(f'Attempt : {attempt}/{total_attempts}')
-            status = self.registerCourse(course_code, section)
+            status = self.registerCourse(course_code, section, course_category)
             if status == 'success':
                 self.stopWorker()
                 return True
@@ -164,7 +164,7 @@ class Registration:
         self.stopWorker()
         return False
     
-    def registerWaiting(self, course_code: int, section: int, opening_time_utc: datetime, user_code: str, password: str, captcha_prefetch: float = config.CAPTCHA_PREFETCH):
+    def registerWaiting(self, course_code: int, section: int, course_category: int, opening_time_utc: datetime, user_code: str, password: str, captcha_prefetch: float = config.CAPTCHA_PREFETCH):
         logger.info('Bu okulun ben aqq.')
         self.prepare(get_assets=False)
         self.syncClientTime()
@@ -186,7 +186,7 @@ class Registration:
             logger.error('Error when logging in.')
             self.stopWorker()
             return False
-        status = self.registerCourse(course_code, section)
+        status = self.registerCourse(course_code, section, course_category)
         if status == 'success':
             logger.info("Registered on first attempt.")
             self.stopWorker()
@@ -195,7 +195,7 @@ class Registration:
             logger.error("Fatal error on first attempt.")
             self.stopWorker()
             return False
-        return self.registerContinously(course_code, section, total_attempts=10, avg_jitter=3)
+        return self.registerContinously(course_code, section, course_category, total_attempts=10, avg_jitter=3)
 
     def checkResponse(self,content: str):
         """Checks if registration is successful or not."""
