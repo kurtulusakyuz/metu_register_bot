@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 import getpass
 import logging
 import time
+import config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S', handlers=[logging.FileHandler("script.log", mode='a', encoding='utf-8'),logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ def main():
                     print("You didn't enter a number between 0 and 120. Using the optimal number.")
             except ValueError: 
                 print("You didn't enter a number. Using the optimal number. (20s)")
-            metu.registerContinously(course_code, section, total_attempts=500, avg_jitter=jitter)
+            metu.registerContinously(course_code, section, total_attempts=config.TOTAL_ATTEMPTS, avg_jitter=jitter)
         else:
             logger.error("Couldn't login. Stopping...")
             sys.exit(1)

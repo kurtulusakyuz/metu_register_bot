@@ -14,6 +14,7 @@ IMPERSONATES = ['chrome142','firefox144']
 
 CAPTCHA_PREFETCH = 45
 CAPTCHA_TIMEOUT = 99
+TOTAL_ATTEMPTS = 2000
 PROG_TYPE = 1 # Sistem açıldığında kontrol edilecek. 1 Major program için.
 TWOCAPTCHA_API_KEY = ''
 DEFAULT_SITEKEY = '' #Send me an email.

@@ -4,7 +4,7 @@ import os
 import logging
 import random
 import config
-import re
+#import re
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
@@ -250,6 +250,7 @@ class Registration:
         solver = TwoCaptcha(config.TWOCAPTCHA_API_KEY)
         for attempt in range(1,total_attempts+1):     
             try:
+                logger.info('Solving captcha...')
                 result = solver.recaptcha(sitekey=self.sitekey, url=self.base_url + '/main.php')
                 if result and result.get('code'):
                     return result['code']
