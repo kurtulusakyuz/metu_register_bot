@@ -1,7 +1,7 @@
 # METU Registration Helper
 > **DISCLAIMER:** This software is for educational purposes only. Your account may be suspended due to the use of scripts. USE THE SOFTWARE AT YOUR OWN RISK. THE AUTHORS ASSUME NO RESPONSIBILITY FOR ANY RESULTS.
 
-This python script utilizes JA3 fingerprint impersonation and automated CAPTCHA solving to seamlessly bypass anti-bot protections. It ensures millisecond-level request precision for targeted system opening times through exact RTT (Round Trip Time) synchronization.
+This python script utilizes JA3 fingerprint impersonation and automated CAPTCHA solving to seamlessly bypass anti-bot protections. It ensures millisecond-level request precision for system opening time through exact RTT (Round Trip Time) synchronization.
 
 ## Installation
 
@@ -12,7 +12,7 @@ This python script utilizes JA3 fingerprint impersonation and automated CAPTCHA 
 
 2. Register at 2captcha.com to obtain your personal API key for the automated solver.
 
-3. Open the provided `config.py` file and fill in the empty variables with your 2Captcha API key. For the default_sitekey, please send me an email. :)
+3. Open the provided `config.py` file and fill in the empty variable with your 2Captcha API key. For the default_sitekey, please send me an email. :)
 
 ## Usage
 
