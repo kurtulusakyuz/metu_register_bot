@@ -114,6 +114,9 @@ class Registration:
                 logger.error('^Captcha pool is empty. There might be a problem.')
                 self.stop_threads = True
                 return 'error'
+            if captcha_data.get('token') == 'ERROR':
+                logger.error('Received error from captcha worker. Aborting registration.')
+                return 'error'
             token_age = time.monotonic() - captcha_data['timestamp']
             if token_age > 110:
                 logger.warning(f'Captcha token expired ({token_age:.1f}s old). Getting new one...')
@@ -278,6 +281,7 @@ class Registration:
     
     def captchaWorker(self):
         logger.info('Captcha worker started.')
+        error = 0
         try:
             while not self.stop_threads:
                 if not self.token_queue.full():
@@ -285,7 +289,16 @@ class Registration:
                     if result:
                         self.token_queue.put({"token": result, "timestamp" : time.monotonic()})
                         logger.info('New captcha added to the captcha pool.')
+                        error = 0
                     else:
+                        error += 1
+                        if error >= 2:
+                            self.stop_threads = True
+                            try:
+                                self.token_queue.put({"token": "ERROR", "timestamp": time.monotonic()}, timeout=1)
+                            except queue.Full:
+                                pass
+                            break
                         time.sleep(3)
                 else:
                     time.sleep(1)
