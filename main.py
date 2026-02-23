@@ -56,15 +56,13 @@ def main():
         metu.prepare()
         metu.loginToSystem(user_code=user_code,password=password)
         if metu.logged_in:
-            logger.info('Logged in. ')
+            jitter = 20
             try:
                 jitter = int(input('Please enter the number of seconds between requests (0-120s): '))
                 if jitter<0 or jitter>120:
                     print("You didn't enter a number between 0 and 120. Using the optimal number.")
-                    jitter = 20
             except ValueError: 
                 print("You didn't enter a number. Using the optimal number. (20s)")
-                jitter = 20
             metu.registerContinously(course_code, section, total_attempts=500, avg_jitter=jitter)
         else:
             logger.error("Couldn't login. Stopping...")

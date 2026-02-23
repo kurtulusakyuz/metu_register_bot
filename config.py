@@ -13,7 +13,7 @@ USER_AGENT_TEMPLATES = {
 IMPERSONATES = ['chrome142','firefox144']
 
 CAPTCHA_PREFETCH = 45
+CAPTCHA_TIMEOUT = 99
 PROG_TYPE = 1 # Sistem açıldığında kontrol edilecek. 1 Major program için.
 TWOCAPTCHA_API_KEY = ''
-DEFAULT_SITEKEY_RECAPTCHA = '' #Send me an email.
-DEFAULT_SITEKEY_HCAPTCHA = '' 
+DEFAULT_SITEKEY = '' #Send me an email.

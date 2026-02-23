@@ -22,13 +22,11 @@ class Registration:
         self.impersonate = random.choice(config.IMPERSONATES)
         self.session = requests.Session(impersonate=self.impersonate)
         self.hidden_inputs = {}
-        self.sitekey = config.DEFAULT_SITEKEY_RECAPTCHA
+        self.sitekey = config.DEFAULT_SITEKEY
         self.logged_in = False
-        self.captcha_type = 'recaptcha'
-        self.isRecaptcha = True
         self.captcha_token = None
         self.token_queue = queue.Queue(maxsize=2)
-        self.stop_threads = False
+        self.stop_event = threading.Event()
     
     def _makeRequest(self, method: str, path='', payload: dict = None, timeout: int = 5):
         url = self.base_url + path
@@ -106,16 +104,21 @@ class Registration:
         if not self.logged_in:
             logger.error('There might be an error while logging in. Please restart the script.')
             return 'error'
-        self.isRecaptcha = self.captcha_type=='recaptcha'
         while True:
-            try:
-                captcha_data = self.token_queue.get(timeout=60)
-            except queue.Empty:
+            captcha_data = None
+            waiting_start = time.monotonic()
+            while time.monotonic() - waiting_start < config.CAPTCHA_TIMEOUT:
+                if self.stop_event.is_set():
+                    logger.info('Captcha worker stopped. Stopping...')
+                    return 'error'
+                try:
+                    captcha_data = self.token_queue.get(timeout=1)
+                    break
+                except queue.Empty:
+                    continue
+            if not captcha_data:
                 logger.error('^Captcha pool is empty. There might be a problem.')
-                self.stop_threads = True
-                return 'error'
-            if captcha_data.get('token') == 'ERROR':
-                logger.error('Received error from captcha worker. Aborting registration.')
+                self.stopWorker()
                 return 'error'
             token_age = time.monotonic() - captcha_data['timestamp']
             if token_age > 110:
@@ -130,8 +133,7 @@ class Registration:
             'textAddCourseCode': str(course_code),
             'textAddCourseSection': str(section),
             'selectAddCourseCategory': str(course_category), ### Please visit config.py .Currently I'll use 8. I guess it's for the NTE courses.
-            'g-recaptcha-response': self.captcha_token if self.isRecaptcha else None,
-            'h-captcha-response': self.captcha_token if not self.isRecaptcha else None,
+            'g-recaptcha-response': self.captcha_token,
             'submitAddCourse': '[ Add Course ]',
             **self.hidden_inputs
         }
@@ -143,27 +145,23 @@ class Registration:
         else: return 'error'
 
     def registerContinously(self,course_code: int, section: int, total_attempts: int=100, avg_jitter: int=10):
-        if not hasattr(self,'worker') or not self.worker.is_alive():
-            self.stop_threads = False
-            self.worker = threading.Thread(target=self.captchaWorker, daemon=True)
-            self.worker.start()
+        self.startWorker()
         attempt = 0
         while attempt<total_attempts:
             attempt += 1
             logger.info(f'Attempt : {attempt}/{total_attempts}')
             status = self.registerCourse(course_code, section)
             if status == 'success':
-                self.stop_threads = True
+                self.stopWorker()
                 return True
             if status == 'error': 
-                self.stop_threads = True
+                self.stopWorker()
                 return False
-            if status in ('retry', 'unknown'): logger.warning('Registration attempt failed. Retrying...')
             wait = self.jitter(avg_jitter*0.5, avg_jitter*1.5)
             logger.info(f'Retrying in {wait:.2f} seconds...')
             time.sleep(wait)
         logger.error('Max attempts reached. Registration failed.')
-        self.stop_threads = True
+        self.stopWorker()
         return False
     
     def registerWaiting(self, course_code: int, section: int, opening_time_utc: datetime, user_code: str, password: str, captcha_prefetch: float = config.CAPTCHA_PREFETCH):
@@ -179,26 +177,23 @@ class Registration:
             print(f'\rRemaining time: {remaining_time.total_seconds():.2f} s', end="")
             time.sleep(0.5)
         logger.info('\n Starting solving captcha to prepare for course registration.')
-        self.stop_threads = False
-        self.worker = threading.Thread(target=self.captchaWorker, daemon=True)
-        self.worker.start()
+        self.startWorker()
         while datetime.now(timezone.utc) < opening_time:
             time.sleep(0.05)
         logger.info('Logging in the system and parsing inputs...')
         self.prepare(get_assets=False)
         if not self.loginToSystem(user_code=user_code,password=password):
             logger.error('Error when logging in.')
-            self.stop_threads = True
+            self.stopWorker()
             return False
-        self.isRecaptcha = self.captcha_type=='recaptcha'
         status = self.registerCourse(course_code, section)
         if status == 'success':
             logger.info("Registered on first attempt.")
-            self.stop_threads = True
+            self.stopWorker()
             return True
         if status == 'error':
             logger.error("Fatal error on first attempt.")
-            self.stop_threads = True
+            self.stopWorker()
             return False
         return self.registerContinously(course_code, section, total_attempts=10, avg_jitter=3)
 
@@ -244,16 +239,9 @@ class Registration:
     def parseCaptchaSiteKey(self,content: str): 
         soup = BeautifulSoup(content, 'html.parser')
         div_captcha = soup.find('div', class_ ='g-recaptcha')
-        self.captcha_type = 'recaptcha'
-        default_sitekey= config.DEFAULT_SITEKEY_RECAPTCHA
-        if not div_captcha: 
-            logger.info("Couldn't find recaptcha. Finding hcaptcha if possible...")
-            div_captcha = soup.find('div', class_='h-captcha')
-            self.captcha_type = 'hcaptcha'
-            default_sitekey = config.DEFAULT_SITEKEY_HCAPTCHA
-        if div_captcha:
-            self.sitekey = div_captcha.get('data-sitekey') or default_sitekey
-        return self.sitekey, self.captcha_type
+        if div_captcha: 
+            self.sitekey = div_captcha.get('data-sitekey') or config.DEFAULT_SITEKEY
+        return self.sitekey
 
     def solveCaptcha(self, total_attempts: int = 3):
         if not self.sitekey: 
@@ -262,18 +250,11 @@ class Registration:
         solver = TwoCaptcha(config.TWOCAPTCHA_API_KEY)
         for attempt in range(1,total_attempts+1):     
             try:
-                logger.info(f'Solving {self.captcha_type} ({attempt}/{total_attempts})...')
-                if self.captcha_type == 'recaptcha':
-                    result = solver.recaptcha(sitekey=self.sitekey, url=self.base_url + '/main.php')
-                elif self.captcha_type == 'hcaptcha':
-                    result = solver.hcaptcha(sitekey=self.sitekey, url=self.base_url + '/main.php')
-                else:
-                    return None
+                result = solver.recaptcha(sitekey=self.sitekey, url=self.base_url + '/main.php')
                 if result and result.get('code'):
-                    logger.info('Captcha solved successfully.')
                     return result['code']
-            except Exception:
-                logger.warning(f'Attempt {attempt} failed.')
+            except Exception as e:
+                logger.warning(f'Attempt {attempt} failed: {e}')
             if attempt < total_attempts:
                 time.sleep(1.5)
         logger.error('2Captcha error. Please check your balance or api key.')
@@ -283,7 +264,7 @@ class Registration:
         logger.info('Captcha worker started.')
         error = 0
         try:
-            while not self.stop_threads:
+            while not self.stop_event.is_set():
                 if not self.token_queue.full():
                     result = self.solveCaptcha()
                     if result:
@@ -293,17 +274,25 @@ class Registration:
                     else:
                         error += 1
                         if error >= 2:
-                            self.stop_threads = True
-                            try:
-                                self.token_queue.put({"token": "ERROR", "timestamp": time.monotonic()}, timeout=1)
-                            except queue.Full:
-                                pass
+                            self.stop_event.set()
                             break
                         time.sleep(3)
                 else:
                     time.sleep(1)
         except Exception as e:
             logger.error(f'Captcha worker crashed: {e}')
+            self.stopWorker()
+
+    def startWorker(self):
+        if not hasattr(self, "worker") or not self.worker.is_alive():
+            self.stop_event.clear()
+            self.worker = threading.Thread(target=self.captchaWorker, daemon=True)
+            self.worker.start()
+
+    def stopWorker(self):
+        self.stop_event.set()
+        if hasattr(self, "worker") and self.worker.is_alive():
+            self.worker.join(timeout=3)
 
     @classmethod
     def detectProxy(cls): #Maybe later 
@@ -319,15 +308,15 @@ class Registration:
         self.time_difference = server_time - local_time
         logger.info(f'The client time is synced. Time difference is {self.time_difference.total_seconds():.2f}s.')
             
-    def randomUserAgent(self): ###Artık lazım olmayabilir. Kalsın yine de, bir problem çıkarsa kullanırım.
-        random_im = random.choice(config.IMPERSONATES)
-        self.impersonate = random_im
-        match = re.match(r"(chrome|firefox)(\d+)", random_im)
-        if not match:
-            raise ValueError("Please check impersonates in config.py file.")
-        browser , self.version = match.groups()
-        template = config.USER_AGENT_TEMPLATES[browser]
-        return template.format(version=self.version)
+#   def randomUserAgent(self): ###Artık lazım olmayabilir. Kalsın yine de, bir problem çıkarsa kullanırım.
+#       random_im = random.choice(config.IMPERSONATES)
+#       self.impersonate = random_im
+#       match = re.match(r"(chrome|firefox)(\d+)", random_im)
+#       if not match:
+#           raise ValueError("Please check impersonates in config.py file.")
+#       browser , self.version = match.groups()
+#       template = config.USER_AGENT_TEMPLATES[browser]
+#       return template.format(version=self.version)
 
     @staticmethod
     def jitter(min_val: float, max_val: float) -> float:
