@@ -132,7 +132,7 @@ class Registration:
             'selectChangeCourseCategory': '1',
             'textAddCourseCode': str(course_code),
             'textAddCourseSection': str(section),
-            'selectAddCourseCategory': str(course_category), ### Please visit config.py .Currently I'll use 8. I guess it's for the NTE courses.
+            'selectAddCourseCategory': str(course_category),
             'g-recaptcha-response': self.captcha_token,
             'submitAddCourse': '[ Add Course ]',
             **self.hidden_inputs
