@@ -12,8 +12,15 @@ from twocaptcha.solver import TwoCaptcha
 from urllib.parse import urljoin
 import threading
 import queue
+from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+class RegistrationStatus(str, Enum):
+    SUCCESS = 'success'
+    ERROR = 'error'
+    RETRY = 'retry'
+    UNKNOWN = 'unknown'
 
 class Registration:
     def __init__(self, base_url: str):
@@ -98,19 +105,20 @@ class Registration:
             if soup.find('div', class_='logout'):
                 self.logged_in = True
                 logger.info('Logged in.')
+                self.parseCaptchaSiteKey(response.text)
         return self.logged_in
 
     def registerCourse(self,course_code: int,section: int, course_category: int):
         if not self.logged_in:
             logger.error('There might be an error while logging in. Please restart the script.')
-            return 'error'
+            return RegistrationStatus.ERROR
         while True:
             captcha_data = None
             waiting_start = time.monotonic()
             while time.monotonic() - waiting_start < config.CAPTCHA_TIMEOUT:
                 if self.stop_event.is_set():
                     logger.info('Captcha worker stopped. Stopping...')
-                    return 'error'
+                    return RegistrationStatus.ERROR
                 try:
                     captcha_data = self.token_queue.get(timeout=1)
                     break
@@ -119,7 +127,7 @@ class Registration:
             if not captcha_data:
                 logger.error('^Captcha pool is empty. There might be a problem.')
                 self.stopWorker()
-                return 'error'
+                return RegistrationStatus.ERROR
             token_age = time.monotonic() - captcha_data['timestamp']
             if token_age > 110:
                 logger.warning(f'Captcha token expired ({token_age:.1f}s old). Getting new one...')
@@ -142,7 +150,7 @@ class Registration:
         if response:
             status = self.checkResponse(response.text)
             return status
-        else: return 'error'
+        else: return RegistrationStatus.ERROR
 
     def registerContinously(self,course_code: int, section: int, course_category: int, total_attempts: int=100, avg_jitter: int=10):
         self.startWorker()
@@ -151,10 +159,10 @@ class Registration:
             attempt += 1
             logger.info(f'Attempt : {attempt}/{total_attempts}')
             status = self.registerCourse(course_code, section, course_category)
-            if status == 'success':
+            if status is RegistrationStatus.SUCCESS:
                 self.stopWorker()
                 return True
-            if status == 'error': 
+            if status is RegistrationStatus.ERROR: 
                 self.stopWorker()
                 return False
             wait = self.jitter(avg_jitter*0.5, avg_jitter*1.5)
@@ -187,11 +195,11 @@ class Registration:
             self.stopWorker()
             return False
         status = self.registerCourse(course_code, section, course_category)
-        if status == 'success':
+        if status is RegistrationStatus.SUCCESS:
             logger.info("Registered on first attempt.")
             self.stopWorker()
             return True
-        if status == 'error':
+        if status is RegistrationStatus.ERROR:
             logger.error("Fatal error on first attempt.")
             self.stopWorker()
             return False
@@ -203,18 +211,18 @@ class Registration:
         div = soup.find('div', id='formmessage')
         if not div: 
             logger.warning('Error during registration. Retrying...')
-            return 'unknown'
+            return RegistrationStatus.UNKNOWN
         div_formsg = div.text.strip().lower()
         if not div_formsg:
             logger.info('^^^Successfully registered to the course.^^^')
-            return 'success'
+            return RegistrationStatus.SUCCESS
         if 'capacity is full:' in div_formsg:
             logger.warning('Capacity is full. Retrying in a few seconds.')
-            return 'retry'
+            return RegistrationStatus.RETRY
         elif 'prerequisite' in div_formsg:
             logger.error("You don't meet the prerequisite. Stopping. Change the course.")
-            return 'error'
-        else: return 'unknown'
+            return RegistrationStatus.ERROR
+        else: return RegistrationStatus.UNKNOWN
 
     def parseHiddenInputs(self, content: str) -> bool:
         soup = BeautifulSoup(content, 'html.parser')
@@ -234,7 +242,7 @@ class Registration:
             "Sec-Fetch-Site": "none" if isMainPage else "same-origin",
             "Referer": "https://www.google.com/"if isMainPage else self.base_url+'/main.php',
         }
-        return {k: v for k, v in default_headers.items() if v is not None} ###Normalde request None value headerları göndermez ama her ihtimale karşı.
+        return {k: v for k, v in default_headers.items() if v is not None} ###Normalde requests None value headerları göndermez ama her ihtimale karşı.
 
     def parseCaptchaSiteKey(self,content: str): 
         soup = BeautifulSoup(content, 'html.parser')
